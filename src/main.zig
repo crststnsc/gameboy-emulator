@@ -1,14 +1,6 @@
 const std = @import("std");
 
 
-const Flags = enum(u3){
-    FLAG_Z = 7,
-    FLAG_N = 6,
-    FLAG_H = 5,
-    FLAG_C = 4
-};
-
-
 const Register = struct {
     reg : u16,
     
@@ -37,6 +29,17 @@ const Emulator = struct {
     register_de     : Register,
     register_hl     : Register,
     
+    // Cartridge
+    cartridge_memory: [0x200000]u8,
+
+    // Memory banking type used by the game (DEFAULT: NONE)
+    memory_bank_type: MemoryBankType = MemoryBankType.NONE,
+    current_rom_bank: u8, 
+
+    enable_ram      : bool,
+
+    ram_banks       : [0x8000]u8,
+    current_ram_bank: u8,
     
     pub fn update() void {
         // const max_cycles = 69905;
@@ -53,6 +56,11 @@ const Emulator = struct {
 
         self.init_memory();
         self.init_registers();
+
+        // read the memory banking from the cartridge
+        self.read_memory_banking_type();
+        self.current_rom_bank = 1;
+        self.current_ram_bank = 0;
     }
 
     fn init_memory(self: *Emulator) void {
@@ -100,21 +108,113 @@ const Emulator = struct {
     fn write_memory(self: *Emulator, address: u16, data: u8) void {
         // don't allow to write to read-only memory
         if (address < 0x8000) {
-            // TODO some warning
+            self.handle_banking(address, data);
         }
+
+        if (address >= 0xA000 and address < 0xC000) {
+            if (self.enable_ram) {
+                const new_address: u16 = address - 0xA000;
+                self.ram_banks[new_address + (self.current_ram_bank * 0x2000)] = data;
+            }
+        }
+
         // restricted memory area
         else if (address >= 0xFEA0 and address < 0xFEFF) {
             // TODO some warning
         }
+
         // anything written to ECHO also gets written in RAM 
         else if (address >= 0xE000 and address < 0xFE00) {
             self.memory[address] = data;
             self.write_memory(address - 0x2000, data);
         }
-        else{
+        else {
             self.memory[address] = data;
         }
     }
+
+    fn read_memory(self: Emulator, address: u16) u8 {
+        switch (address) {
+            // mapping of the current bank used by the gameboy
+            // to the actual memory bank in the cartridge
+            0x4000...0x7FFF => {
+                const new_address = address - 0x4000;
+                return self.cartridge_memory[new_address + (self.current_rom_bank * 0x4000)];
+            },
+            // in the case of RAM we offset by 0x2000 bytes because that is
+            // the size of single bank
+            0xA000...0xBFFF => {
+                const new_address = address - 0xA000;
+                return self.cartridge_memory[new_address + (self.current_ram_bank * 0x2000)];
+            },
+            else => {
+                return self.memory[address];
+            }
+        }
+    }
+
+    fn handle_banking(self: *Emulator, address: u16, data: u8) void {
+        switch (address) {
+            0x0000...0x1FFF => {
+                if (self.memory_bank_type.is_none()) {
+                    return;
+                }
+
+                // enable ram bank 
+            },
+            0x2000...0x3FFF => {
+                if (self.memory_bank_type.is_none()) {
+                    return;
+                }
+                    
+                // change lo rom bank
+            },
+            0x4000...0x5FFF => {
+                if (self.memory_bank_type.is_MBC1() == false) {
+                    return;
+                }
+
+                // if rom banking 
+                //      change hi rom bank
+                // else
+                //      change ram bank 
+            },
+            else => { return; }
+        }
+    }
+
+    fn read_memory_banking_type(self: Emulator) void {
+        switch (self.cartridge_memory[0x147]) {
+            1...3 => {
+                self.memory_bank_type = .MBC1;
+            },
+            5, 6  => {
+                self.memory_bank_type = .MBC2;
+            }
+        }
+    }
+
+    const Flags = enum(u8) {
+        FLAG_Z = 7,
+        FLAG_N = 6,
+        FLAG_H = 5,
+        FLAG_C = 4,
+        DEFAULT_FLAG
+    };
+
+    const MemoryBankType = enum {
+        NONE,
+        MBC1,
+        MBC2,
+
+        pub fn is_none(self: MemoryBankType) bool {
+            return self == .None;
+        }
+
+        pub fn is_MBC1(self: MemoryBankType) bool {
+            return self == .MBC1;
+        }
+    };
 };
 
 
