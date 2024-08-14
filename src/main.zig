@@ -1,9 +1,9 @@
 const std = @import("std");
-
+const utils = @import("utils.zig");
 
 const Register = struct {
-    reg : u16,
-    
+    reg: u16,
+
     pub fn lo(self: *Register) *u8 {
         return @ptrCast(self);
     }
@@ -13,34 +13,33 @@ const Register = struct {
     }
 };
 
-
 const Emulator = struct {
-    screen_data     : [160][144][3]u8,
-    memory          : [0x10000]u8,
-    program_counter : u16,
+    screen_data: [160][144][3]u8,
+    memory: [0x10000]u8,
+    program_counter: u16,
 
-    // The stack pointer is modeled as a register 
+    // The stack pointer is modeled as a register
     // because some opcodes use the hi and lo bits of the stack pointer
-    stack_pointer   : Register,
+    stack_pointer: Register,
 
     // Registers
-    register_af     : Register,
-    register_bc     : Register,
-    register_de     : Register,
-    register_hl     : Register,
-    
+    register_af: Register,
+    register_bc: Register,
+    register_de: Register,
+    register_hl: Register,
+
     // Cartridge
     cartridge_memory: [0x200000]u8,
 
     // Memory banking type used by the game (DEFAULT: NONE)
     memory_bank_type: MemoryBankType = MemoryBankType.NONE,
-    current_rom_bank: u8, 
+    current_rom_bank: u8,
 
-    enable_ram      : bool,
+    enable_ram: bool,
 
-    ram_banks       : [0x8000]u8,
+    ram_banks: [0x8000]u8,
     current_ram_bank: u8,
-    
+
     pub fn update() void {
         // const max_cycles = 69905;
         // var cycles_this_update = 0;
@@ -52,7 +51,7 @@ const Emulator = struct {
         // when the emulator starts we must set the state of registers,
         // the stack pointer, program counter and some memory registers
         self.program_counter = 0x100;
-        self.stack_pointer   = 0xFFFE;
+        self.stack_pointer = 0xFFFE;
 
         self.init_memory();
         self.init_registers();
@@ -95,7 +94,6 @@ const Emulator = struct {
         self.memory[0xFF4A] = 0x00;
         self.memory[0xFF4B] = 0x00;
         self.memory[0xFFFF] = 0x00;
-
     }
 
     fn init_registers(self: *Emulator) void {
@@ -123,12 +121,11 @@ const Emulator = struct {
             // TODO some warning
         }
 
-        // anything written to ECHO also gets written in RAM 
+        // anything written to ECHO also gets written in RAM
         else if (address >= 0xE000 and address < 0xFE00) {
             self.memory[address] = data;
             self.write_memory(address - 0x2000, data);
-        }
-        else {
+        } else {
             self.memory[address] = data;
         }
     }
@@ -149,7 +146,7 @@ const Emulator = struct {
             },
             else => {
                 return self.memory[address];
-            }
+            },
         }
     }
 
@@ -160,13 +157,13 @@ const Emulator = struct {
                     return;
                 }
 
-                // enable ram bank 
+                // enable ram bank
             },
             0x2000...0x3FFF => {
                 if (self.memory_bank_type.is_none()) {
                     return;
                 }
-                    
+
                 // change lo rom bank
             },
             0x4000...0x5FFF => {
@@ -174,12 +171,38 @@ const Emulator = struct {
                     return;
                 }
 
-                // if rom banking 
+                // if rom banking
                 //      change hi rom bank
                 // else
-                //      change ram bank 
+                //      change ram bank
             },
-            else => { return; }
+            0x6000...0x7FFF => {
+                if (self.memory_bank_type.is_MBC1() == false) {
+                    return;
+                }
+
+                // change rom/ram mode
+            },
+            else => {
+                return;
+            },
+        }
+    }
+
+    fn enable_ram_bank(self: *Emulator, address: u16, data: u8) void {
+        if (self.memory_bank_type.is_MBC2()) {
+            const byte_to_check = self.memory[address];
+            if (utils.is_bit_set(byte_to_check, 4) == false) {
+                return;
+            }
+        }
+
+        const test_data = data & 0xF;
+        if (test_data == 0xA) {
+            self.enable_ram = true;
+        }
+        else if (test_data == 0x0) {
+            self.enable_ram = false;
         }
     }
 
@@ -188,9 +211,9 @@ const Emulator = struct {
             1...3 => {
                 self.memory_bank_type = .MBC1;
             },
-            5, 6  => {
+            5, 6 => {
                 self.memory_bank_type = .MBC2;
-            }
+            },
         }
     }
 
@@ -199,7 +222,6 @@ const Emulator = struct {
         FLAG_N = 6,
         FLAG_H = 5,
         FLAG_C = 4,
-        DEFAULT_FLAG
     };
 
     const MemoryBankType = enum {
@@ -214,9 +236,12 @@ const Emulator = struct {
         pub fn is_MBC1(self: MemoryBankType) bool {
             return self == .MBC1;
         }
+
+        pub fn is_MBC2(self: MemoryBankType) bool {
+            return self == .MBC2;
+        }
     };
 };
-
 
 pub fn main() !void {
     const cartridge_file = try std.fs.cwd().openFile("./src/tetris.gb", .{});
@@ -227,9 +252,10 @@ pub fn main() !void {
 
     std.debug.print("Bytes read: {}\n", .{bytes_read});
 
-    var reg: Register = Register {.reg = 0xAABB};
+    var reg: Register = Register{ .reg = 0xAABB };
     std.debug.print("Register value: {x}\n", .{reg.reg});
     std.debug.print("Lo value: {x}\n", .{reg.lo().*});
     std.debug.print("Hi value: {x}\n", .{reg.hi().*});
 
+    std.debug.print("{}", .{true == 1});
 }
