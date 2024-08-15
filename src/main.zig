@@ -43,6 +43,10 @@ const Emulator = struct {
     ram_banks: [0x8000]u8,
     current_ram_bank: u8,
 
+    timer_counter: u16,
+    divider_register: u8,
+    divider_counter: u8 = 0,
+
     pub fn update() void {
         // const max_cycles = 69905;
         // var cycles_this_update = 0;
@@ -106,32 +110,96 @@ const Emulator = struct {
         self.register_hl = 0x014D;
     }
 
-    fn write_memory(self: *Emulator, address: u16, data: u8) void {
-        // don't allow to write to read-only memory
-        if (address < 0x8000) {
-            self.handle_banking(address, data);
-        }
+    fn update_timers(self: *Emulator, cycles: u8) void {
+        // divider_register();
+    }
 
-        if (address >= 0xA000 and address < 0xC000) {
-            if (self.enable_ram) {
-                const new_address: u16 = address - 0xA000;
-                self.ram_banks[new_address + (self.current_ram_bank * 0x2000)] = data;
+    fn is_clock_enabled(self: Emulator) bool {
+        // the second bit in the time controller specifies if 
+        // the clock is enabled
+        const second_bit = self.read_memory(Time.TMC.get());
+        return utils.is_bit_set(second_bit, 2);
+    }
+
+    fn get_clock_freq(self: Emulator) u8 {
+        return self.read_memory(Time.TMC.get()) & 0x3;
+    }
+
+    fn set_clock_freq(self: *Emulator) void {
+        const freq = self.get_clock_freq();
+        switch (freq) {
+            0 => {
+                self.timer_counter = 1024;
+            },
+            1 => {
+                self.timer_counter = 16;
+            },
+            2 => {
+                self.timer_counter = 64;
+            },
+            3 => {
+                self.timer_counter = 256;
             }
         }
+    }
 
-        // restricted memory area
-        else if (address >= 0xFEA0 and address < 0xFEFF) {
-            // TODO some warning
-        }
-
-        // anything written to ECHO also gets written in RAM
-        else if (address >= 0xE000 and address < 0xFE00) {
-            self.memory[address] = data;
-            self.write_memory(address - 0x2000, data);
-        } else {
-            self.memory[address] = data;
+    fn update_divier_register(self: *Emulator, cycles: u8) void {
+        self.divider_register += cycles;
+        if (self.divider_counter >= 255) {
+            self.divider_counter = 0;
+            self.memory[0xFF04] += 1;
         }
     }
+
+    fn write_memory(self: *Emulator, address: u16, data: u8) void {
+    switch (address) {
+        // ROM area: handle banking
+        0x0000...0x7FFF => {
+            self.handle_banking(address, data);
+        },
+
+        // RAM area: handle RAM writing
+        0xA000...0xBFFF => {
+            if (self.enable_ram) {
+                const new_address = address - 0xA000;
+                self.ram_banks[new_address + (self.current_ram_bank * 0x2000)] = data;
+            }
+        },
+
+        // Restricted memory area
+        0xFEA0...0xFEFF => {
+            // TODO some warning
+        },
+
+        // ECHO area: mirror writes to both ECHO and RAM
+        0xE000...0xFDFF => {
+            self.memory[address] = data;
+            self.write_memory(address - 0x2000, data);
+        },
+
+        // Timer control memory area
+        Time.TMC.get() => {
+            const freq = self.get_clock_freq();
+            self.memory[address] = data;
+            const new_freq = self.get_clock_freq();
+
+            if (freq != new_freq) {
+                self.set_clock_freq();
+            }
+        },
+
+        // trap the divider register
+        0xFF04 => {
+            self.memory[address] = 0;
+        },
+
+        // Default: write to memory directly
+        else => {
+            self.memory[address] = data;
+        },
+    }
+}
+
 
     fn read_memory(self: Emulator, address: u16) u8 {
         switch (address) {
