@@ -1,6 +1,7 @@
 const std = @import("std");
 const utils = @import("utils.zig");
 
+
 const Register = struct {
     reg: u16,
 
@@ -12,6 +13,7 @@ const Register = struct {
         return @ptrCast(@as(*u8, @ptrFromInt(@intFromPtr(self) + 1)));
     }
 };
+
 
 const Emulator = struct {
     screen_data: [160][144][3]u8,
@@ -33,6 +35,7 @@ const Emulator = struct {
 
     // Memory banking type used by the game (DEFAULT: NONE)
     memory_bank_type: MemoryBankType = MemoryBankType.NONE,
+    rom_banking: bool,
     current_rom_bank: u8,
 
     enable_ram: bool,
@@ -157,7 +160,7 @@ const Emulator = struct {
                     return;
                 }
 
-                // enable ram bank
+                self.enable_ram_bank(address, data);
             },
             0x2000...0x3FFF => {
                 if (self.memory_bank_type.is_none()) {
@@ -165,6 +168,7 @@ const Emulator = struct {
                 }
 
                 // change lo rom bank
+                self.change_lo_rom_bank(data);
             },
             0x4000...0x5FFF => {
                 if (self.memory_bank_type.is_MBC1() == false) {
@@ -175,6 +179,12 @@ const Emulator = struct {
                 //      change hi rom bank
                 // else
                 //      change ram bank
+                if (self.rom_banking) {
+                    self.change_hi_rom_bank(data);
+                } else {
+                    self.change_ram_bank(data);
+                }
+
             },
             0x6000...0x7FFF => {
                 if (self.memory_bank_type.is_MBC1() == false) {
@@ -182,6 +192,7 @@ const Emulator = struct {
                 }
 
                 // change rom/ram mode
+                self.switch_rom_ram_mode(data);
             },
             else => {
                 return;
@@ -206,6 +217,49 @@ const Emulator = struct {
         }
     }
 
+    fn change_lo_rom_bank(self: *Emulator, data: u8) void {
+        if (self.memory_bank_type.is_MBC2()) {
+            self.current_rom_bank = data & 0xF;
+            if (self.current_rom_bank == 0) {
+                self.current_rom_bank += 1;
+            }
+            return;
+        }
+
+        const lower5_bits = data & 31;
+        self.current_rom_bank &= 224;
+        self.current_rom_bank |= lower5_bits;
+        if (self.current_rom_bank == 0) {
+            self.current_rom_bank += 1;
+        }
+    }
+
+    fn change_hi_rom_bank(self: *Emulator, data: u8) void {
+        // turn off upper 3 bits of current rom bank
+        self.current_rom_bank &= 31;
+
+        // turn off the lower 5 bits of the data
+        data &= 224;
+        self.current_rom_bank |= data;
+        if (self.current_rom_bank == 0) {
+            self.current_rom_bank += 1;
+        }
+    }
+
+    fn change_ram_bank(self: *Emulator, data: u8) void {
+        // sets the current ram bank based on the lower 2 bits of data
+        self.current_ram_bank = data & 0x3;
+    }
+
+    fn switch_rom_ram_mode(self: *Emulator, data: u8) void {
+        const new_data = data & 0x1;
+        self.rom_banking = (new_data == 0);
+
+        if (self.rom_banking) {
+            self.current_ram_bank = 0;
+        }
+    }
+
     fn read_memory_banking_type(self: Emulator) void {
         switch (self.cartridge_memory[0x147]) {
             1...3 => {
@@ -222,6 +276,16 @@ const Emulator = struct {
         FLAG_N = 6,
         FLAG_H = 5,
         FLAG_C = 4,
+    };
+
+    const Time = enum(u16) {
+        TIMA = 0xFF05,
+        TMA  = 0xFF06,
+        TMC  = 0xFF07,
+
+        pub fn get(self: Time) u16 {
+            return @intFromEnum(self);
+        }
     };
 
     const MemoryBankType = enum {
@@ -243,6 +307,7 @@ const Emulator = struct {
     };
 };
 
+
 pub fn main() !void {
     const cartridge_file = try std.fs.cwd().openFile("./src/tetris.gb", .{});
     defer cartridge_file.close();
@@ -257,5 +322,7 @@ pub fn main() !void {
     std.debug.print("Lo value: {x}\n", .{reg.lo().*});
     std.debug.print("Hi value: {x}\n", .{reg.hi().*});
 
-    std.debug.print("{}", .{true == 1});
+    const some_data = 0b01011001;
+    const lower5: u8 = some_data & 31;
+    std.debug.print("Lower 5 bits: {}\n", .{lower5});
 }
