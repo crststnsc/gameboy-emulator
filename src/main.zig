@@ -47,6 +47,8 @@ const Emulator = struct {
     divider_register: u8,
     divider_counter: u8 = 0,
 
+    interrupt_master: bool,
+
     pub fn update() void {
         // const max_cycles = 69905;
         // var cycles_this_update = 0;
@@ -67,6 +69,8 @@ const Emulator = struct {
         self.read_memory_banking_type();
         self.current_rom_bank = 1;
         self.current_ram_bank = 0;
+
+        @memset(&self.ram_banks, 0);
     }
 
     fn init_memory(self: *Emulator) void {
@@ -111,14 +115,30 @@ const Emulator = struct {
     }
 
     fn update_timers(self: *Emulator, cycles: u8) void {
-        // divider_register();
+        self.update_divier_register(cycles);
+
+        if (self.is_clock_enabled()) {
+            self.timer_counter -= cycles;
+
+            if (self.timer_counter <= 0) {
+                self.set_clock_freq();
+
+                const TIMA = Time.TIMA.get();
+                if (self.read_memory(TIMA) == 255) {
+                    self.write_memory(TIMA, self.read_memory(TIMA));
+                    self.request_interrupt(2);
+                } else {
+                    self.write_memory(TIMA, self.read_memory(TIMA) + 1);
+                }
+            }
+        }
     }
 
     fn is_clock_enabled(self: Emulator) bool {
         // the second bit in the time controller specifies if 
         // the clock is enabled
-        const second_bit = self.read_memory(Time.TMC.get());
-        return utils.is_bit_set(second_bit, 2);
+        const time_controller = self.read_memory(Time.TMC.get());
+        return utils.is_bit_set(time_controller, 2);
     }
 
     fn get_clock_freq(self: Emulator) u8 {
@@ -151,54 +171,107 @@ const Emulator = struct {
         }
     }
 
-    fn write_memory(self: *Emulator, address: u16, data: u8) void {
-    switch (address) {
-        // ROM area: handle banking
-        0x0000...0x7FFF => {
-            self.handle_banking(address, data);
-        },
-
-        // RAM area: handle RAM writing
-        0xA000...0xBFFF => {
-            if (self.enable_ram) {
-                const new_address = address - 0xA000;
-                self.ram_banks[new_address + (self.current_ram_bank * 0x2000)] = data;
-            }
-        },
-
-        // Restricted memory area
-        0xFEA0...0xFEFF => {
-            // TODO some warning
-        },
-
-        // ECHO area: mirror writes to both ECHO and RAM
-        0xE000...0xFDFF => {
-            self.memory[address] = data;
-            self.write_memory(address - 0x2000, data);
-        },
-
-        // Timer control memory area
-        Time.TMC.get() => {
-            const freq = self.get_clock_freq();
-            self.memory[address] = data;
-            const new_freq = self.get_clock_freq();
-
-            if (freq != new_freq) {
-                self.set_clock_freq();
-            }
-        },
-
-        // trap the divider register
-        0xFF04 => {
-            self.memory[address] = 0;
-        },
-
-        // Default: write to memory directly
-        else => {
-            self.memory[address] = data;
-        },
+    fn request_interrupt(self: *Emulator, id: u8) void {
+        var request = self.read_memory(0xFF0F);
+        request = utils.set_bit(request, id);
+        self.write_memory(0xFF0F, request);
     }
-}
+
+    fn check_interrupts(self: *Emulator) void {
+        if (self.interrupt_master == false) {
+            return;
+        }
+
+        const req = self.read_memory(0xFF0F);
+        const enabled = self.read_memory(0xFFFF);
+        if (req == 0) {
+            return;
+        }
+
+        for (0..4) |i| {
+            if (utils.is_bit_set(req, i) == false) {
+                return;
+            }
+
+            if (utils.is_bit_set(enabled, i) == true) {
+                self.service_interrupt(i);
+            }
+        }
+    }
+
+    fn service_interrupt(self: *Emulator, interrupt: u8) void {
+        self.interrupt_master = false;
+
+        var request = self.read_memory(0xFF0F);
+        request = utils.reset_bit(request, interrupt);
+        self.write_memory(0xFF0F, request);
+
+        switch (interrupt) {
+            0 => {
+                self.program_counter = 0x40;
+            },
+            1 => {
+                self.program_counter = 0x48;
+            },
+            2 => {
+                self.program_counter = 0x50;
+            },
+            4 => {
+                self.program_counter = 0x60;
+            },
+        }
+
+        // TODO push address to stack
+    }
+
+    fn write_memory(self: *Emulator, address: u16, data: u8) void {
+        switch (address) {
+            // ROM area: handle banking
+            0x0000...0x7FFF => {
+                self.handle_banking(address, data);
+            },
+
+            // RAM area: handle RAM writing
+            0xA000...0xBFFF => {
+                if (self.enable_ram) {
+                    const new_address = address - 0xA000;
+                    self.ram_banks[new_address + (self.current_ram_bank * 0x2000)] = data;
+                }
+            },
+
+            // Restricted memory area
+            0xFEA0...0xFEFF => {
+                // TODO some warning
+            },
+
+            // ECHO area: mirror writes to both ECHO and RAM
+            0xE000...0xFDFF => {
+                self.memory[address] = data;
+                self.write_memory(address - 0x2000, data);
+            },
+
+            // Timer control memory area
+            Time.TMC.get() => {
+                const freq = self.get_clock_freq();
+                self.memory[address] = data;
+                const new_freq = self.get_clock_freq();
+
+                if (freq != new_freq) {
+                    self.set_clock_freq();
+                }
+            },
+
+            // trap the divider register
+            0xFF04 => {
+                self.memory[address] = 0;
+            },
+
+            // Default: write to memory directly
+            else => {
+                self.memory[address] = data;
+            },
+        }
+    }
 
 
     fn read_memory(self: Emulator, address: u16) u8 {
