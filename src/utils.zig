@@ -18,6 +18,12 @@ fn reset_bit(data: u8, bit_nr: comptime_int) u8 {
     return new_data;
 }
 
+fn get_bit(data: u8, bit_nr: comptime_int) u8 {
+    if (is_bit_set(data, bit_nr)) {
+        return 1;
+    }
+    return 0;
+}
 
 test "check bit set" {
     const data = 0b00001000;

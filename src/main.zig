@@ -1,5 +1,6 @@
 const std = @import("std");
 const utils = @import("utils.zig");
+const rl = @cImport(@cInclude("raylib.h"));
 
 
 const Register = struct {
@@ -49,11 +50,21 @@ const Emulator = struct {
 
     interrupt_master: bool,
 
+    scanline_counter: u16,
+
     pub fn update() void {
         // const max_cycles = 69905;
         // var cycles_this_update = 0;
 
-        // TODO
+        // while (cycles_this_update < max_cycles) {
+            // TODO const cycles = self.execute_next_opcode();
+            // cycles_this_update += cycles;
+            // self.update_timers(cycles);
+            // self.update_graphics(cycles);
+            // TODO self.do_interrupts();
+        // }
+
+        // TODO self.render_screen();
     }
 
     pub fn init(self: *Emulator) Emulator {
@@ -266,6 +277,11 @@ const Emulator = struct {
                 self.memory[address] = 0;
             },
 
+            // launch DMA
+            0xFF45 => {
+                self.dma_transfer(data);
+            },
+
             // Default: write to memory directly
             else => {
                 self.memory[address] = data;
@@ -273,6 +289,207 @@ const Emulator = struct {
         }
     }
 
+    fn draw_scan_line(self: *Emulator) void {
+        const lcd_control_register = self.read_memory(0xFF40);
+        if (utils.is_bit_set(lcd_control_register, 0)) {
+            self.render_tiles();
+        }
+        if (utils.is_bit_set(lcd_control_register, 1)) {
+            self.render_sprites();
+        }
+    }
+
+    fn render_tiles(self: *Emulator) void {
+        var tile_data = 0;
+        var background_memory = 0;
+        var unsigned = true;
+
+        const scroll_y = self.read_memory(0xFF42);
+        const scroll_x = self.read_memory(0xFF43);
+        const window_y = self.read_memory(0xFF4A);
+        const window_x = self.read_memory(0xFF4B) - 7;
+
+        var using_window = false;
+
+        const lcd_control_register = self.read_memory(0xFF40);
+        if (utils.is_bit_set(lcd_control_register, 5)) {
+            if (window_y <= self.read_memory(0xFF44)) {
+                using_window = true;
+            }
+        }
+
+        if (utils.is_bit_set(lcd_control_register, 4)) {
+            tile_data = 0x8000;
+        } else {
+            tile_data = 0x8800;
+            unsigned = false;
+        }
+
+        if (using_window == false) {
+            background_memory = if (utils.is_bit_set(lcd_control_register, 3)) 0x9C00 else 0x9800;
+        } else {
+            background_memory = if (utils.is_bit_set(lcd_control_register, 6)) 0x9C00 else 0x9800;
+        }
+
+        var pos_y = 0;
+        if (using_window == false) {
+            pos_y = scroll_y + self.read_memory(0xFF44);
+        } else {
+            pos_y = self.read_memory(0xFF44) - window_y;
+        }
+
+        const tile_row: u16 = (pos_y / 8) * 32;
+        
+        for (0..159) |pixel| {
+            var pos_x = pixel + scroll_x;
+
+            if (using_window and pixel >= window_x) {
+                pos_x = pixel - window_x;
+            }
+
+            const tile_col: u16 = pos_x / 8;
+            var tile_num = undefined;
+
+            const tile_address = background_memory + tile_row + tile_col;
+            if (unsigned) {
+                tile_num = self.read_memory(tile_address);
+            } else {
+                tile_num = @as(i8, self.read_memory(tile_address));
+            }
+
+            var tile_location = tile_data;
+            if (unsigned) {
+                tile_location += tile_num * 16;
+            } else {
+                tile_location += (tile_num + 128) * 16;
+            }
+
+            var line = pos_y % 8;
+            line *= 2;
+
+            const data1 = self.read_memory(tile_location + line);
+            const data2 = self.read_memory(tile_location + line + 1);
+
+            var color_bit = pos_x % 8;
+            color_bit -=  7;
+            color_bit *= -1;
+
+            var color_num = if (utils.is_bit_set(data2, color_bit)) 1 else 0;
+            const color_num_2 = if (utils.is_bit_set(data1, color_bit)) 1 else 0;
+            color_num <<= 1;
+            color_num |= color_num_2;
+
+            const color = self.get_color(color_num, 0xFF47);
+            const row = self.read_memory(0xFF44);
+
+            self.screen_data[pixel][row][0] = color.red;
+            self.screen_data[pixel][row][1] = color.green;
+            self.screen_data[pixel][row][2] = color.blue;
+        }
+    }
+
+    fn render_sprites(self: *Emulator) void {
+        const lcd_control_register = self.read_memory(0xFF40);
+
+        const use_8x16 = utils.is_bit_set(lcd_control_register, 2);
+
+        for (0..39) |sprite| {
+            const index = sprite * 4;
+            const pos_y = self.read_memory(0xFE00 + index) - 16;
+            const pos_x = self.read_memory(0xFE00 + index + 1) - 8;
+            const tile_location = self.read_memory(0xFE00 + index + 2);
+            const attributes = self.read_memory(0xFE00 + index + 3);
+
+            const flip_y = utils.is_bit_set(attributes, 6);
+            const flip_x = utils.is_bit_set(attributes, 5);
+
+            const scanline = self.read_memory(0xFF44);
+            const size_y = if (use_8x16) 16 else 8;
+
+            if (scanline >= pos_y and scanline < (pos_y + size_y)) {
+                var line = scanline - pos_y;
+
+                if (flip_y) {
+                    line -= size_y;
+                    line *= -1;
+                }
+
+                line *= 2;
+                const data_address = 0x8000 + (tile_location * 16) + line;
+                const data1 = self.read_memory(data_address);
+                const data2 = self.read_memory(data_address + 1);
+
+                var tile_pixel = 7;
+                while (tile_pixel >= 0) : (tile_pixel -= 1) {
+                    var color_bit = tile_pixel;
+                    if (flip_x) {
+                        color_bit -=  7;
+                        color_bit *= -1;
+                    }
+
+                    var color_num = utils.get_bit(data2, color_bit);
+                    color_num <<= 1;
+                    color_num |= utils.get_bit(data1, color_bit);
+
+                    const color_address: u16 = if (utils.is_bit_set(attributes, 4)) 0xFF49 else 0xFF48;
+                    const color = self.get_color(color_num, color_address);
+
+                    const pixel_x = 7 - tile_pixel;                    
+                    const pixel = pos_x + pixel_x;
+
+                    self.screen_data[pixel][scanline][0] = color.red; 
+                    self.screen_data[pixel][scanline][1] = color.green; 
+                    self.screen_data[pixel][scanline][2] = color.blue; 
+                }
+            }
+        }
+    }
+
+    fn get_color(self: Emulator, color_num: u8, address: u16) Color {
+        const color_to_return = Color{};
+        const palette = self.read_memory(address);
+        var hi = 0;
+        var lo = 0;
+
+        switch (color_num) {
+            0 => {
+                hi = 1; lo = 0;
+            },
+            1 => {
+                hi = 3; lo = 2;
+            },
+            2 => {
+                hi = 5; lo = 4;
+            },
+            3 => {
+                hi = 7; lo = 6;
+            }
+        }
+
+        var color = utils.get_bit(palette, hi) << 1;
+        color |= utils.get_bit(palette, lo);
+
+        switch (color) {
+            0 => {
+                color_to_return = Color{ .red = 255, .green = 255, .blue = 255};
+            },
+            1 => {
+                color_to_return = Color{ .red = 0xCC, .green = 0xCC, .blue = 0xCC};
+            },
+            2 => {
+                color_to_return = Color{ .red = 0x77, .green = 0x77, .blue = 0x77};
+            }
+        }
+
+        return color_to_return;
+    }
+
+    fn dma_transfer(self: *Emulator, data: u8) void {
+        const address: u16 = data << 8;
+        for (0x00..0x9F) |i| {
+            self.write_memory(0xFE00 + i, self.read_memory(address + i));
+        }
+    }
 
     fn read_memory(self: Emulator, address: u16) u8 {
         switch (address) {
@@ -290,7 +507,7 @@ const Emulator = struct {
             },
             else => {
                 return self.memory[address];
-            },
+            }
         }
     }
 
@@ -316,10 +533,6 @@ const Emulator = struct {
                     return;
                 }
 
-                // if rom banking
-                //      change hi rom bank
-                // else
-                //      change ram bank
                 if (self.rom_banking) {
                     self.change_hi_rom_bank(data);
                 } else {
@@ -331,7 +544,6 @@ const Emulator = struct {
                 if (self.memory_bank_type.is_MBC1() == false) {
                     return;
                 }
-
                 // change rom/ram mode
                 self.switch_rom_ram_mode(data);
             },
@@ -411,6 +623,101 @@ const Emulator = struct {
             },
         }
     }
+
+    fn update_graphics(self: *Emulator, cycles: u8) void {
+        self.set_lcd_status();
+
+        if (self.is_lcd_enabled() == false) {
+            return;
+        }
+
+        self.scanline_counter -= cycles;
+
+        if (self.scanline_counter <= 0) {
+            self.memory[0xFF44] += 1;
+            const current_line = self.read_memory(0xFF44);
+
+            self.scanline_counter = 456;
+
+            if (current_line == 144) {
+                self.request_interrupt(0);
+            } else if (current_line > 153) {
+                self.memory[0xFF44] = 0;
+            } else if (current_line < 144) {
+                self.draw_scan_line();
+            }
+        }
+    }
+
+    fn set_lcd_status(self: *Emulator) void {
+        const status = self.read_memory(0xFF41);
+        if (self.is_lcd_enabled() == false) {
+            self.scanline_counter = 456;
+            self.memory[0xFF44] = 0;
+            status &= 252;
+            status = utils.set_bit(status, 0);
+            self.write_memory(0xFF41, status);
+            return;
+        }
+
+        const current_line = self.read_memory(0xFF44);
+        const current_mode = status & 0x3;
+
+        var mode = 0;
+        var req_int = false;
+
+        if (current_line >= 144) {
+            mode = 1;
+            status = utils.set_bit(status, 0);
+            status = utils.reset_bit(status, 1);
+            req_int = utils.is_bit_set(status, 4);
+        } else {
+            const search_sprites_mode_end = 456 - 80;
+            const transfer_data_mode_end = search_sprites_mode_end - 172;
+
+            if (self.scanline_counter >= search_sprites_mode_end) {
+                mode = 2;
+                status = utils.set_bit(status, 1);
+                status = utils.reset_bit(status, 0);
+                req_int = utils.is_bit_set(status, 5);
+            } else if (self.scanline_counter >= transfer_data_mode_end) {
+                mode = 3;
+                status = utils.set_bit(status, 1);
+                status = utils.set_bit(status, 0);
+            } else {
+                mode = 0;
+                status = utils.reset_bit(status, 1);
+                status = utils.reset_bit(status, 3);
+                req_int = utils.is_bit_set(status, 3);
+            }
+        }
+
+        if (req_int and mode != current_mode) {
+            self.request_interrupt(1);
+        }
+
+        if (current_line == self.read_memory(0xFF45)) {
+            status = utils.set_bit(status, 2);
+            if (utils.is_bit_set(status, 6)) {
+                self.request_interrupt(1);
+            }
+        } else{
+            status = utils.reset_bit(status, 2);
+        }
+
+        self.write_memory(0xFF41, status);
+    }
+
+    fn is_lcd_enabled(self: Emulator) bool {
+        const lcd_control_register = self.read_memory(0xFF40);
+        return utils.is_bit_set(lcd_control_register, 7);
+    }
+
+    const Color = struct {
+        red: u8 = 0,
+        green: u8 = 0,
+        blue: u8 = 0
+    };
 
     const Flags = enum(u8) {
         FLAG_Z = 7,
