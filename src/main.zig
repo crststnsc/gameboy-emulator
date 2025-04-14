@@ -2,7 +2,6 @@ const std = @import("std");
 const utils = @import("utils.zig");
 const rl = @cImport(@cInclude("raylib.h"));
 
-
 const Register = struct {
     reg: u16,
 
@@ -14,7 +13,6 @@ const Register = struct {
         return @ptrCast(@as(*u8, @ptrFromInt(@intFromPtr(self) + 1)));
     }
 };
-
 
 const Emulator = struct {
     screen_data: [160][144][3]u8,
@@ -51,21 +49,32 @@ const Emulator = struct {
     interrupt_master: bool,
 
     scanline_counter: u16,
+    joypad_state: u8,
 
     pub fn update() void {
         // const max_cycles = 69905;
         // var cycles_this_update = 0;
 
         // while (cycles_this_update < max_cycles) {
-            // TODO const cycles = self.execute_next_opcode();
-            // cycles_this_update += cycles;
-            // self.update_timers(cycles);
-            // self.update_graphics(cycles);
-            // TODO self.do_interrupts();
+        // TODO const cycles = self.execute_next_opcode();
+        // cycles_this_update += cycles;
+        // self.update_timers(cycles);
+        // self.update_graphics(cycles);
+        // TODO self.do_interrupts();
         // }
 
         // TODO self.render_screen();
     }
+
+    fn execute_next_opcode(self: *Emulator) comptime_int {
+        var res = 0;
+        const opcode = self.read_memory(self.program_counter);
+        self.program_counter += 1;
+        res = self.execute_opcode(opcode);
+        return res;
+    }
+
+    fn execute_opcode(opcode: u8) void {}
 
     pub fn init(self: *Emulator) Emulator {
         // when the emulator starts we must set the state of registers,
@@ -146,7 +155,7 @@ const Emulator = struct {
     }
 
     fn is_clock_enabled(self: Emulator) bool {
-        // the second bit in the time controller specifies if 
+        // the second bit in the time controller specifies if
         // the clock is enabled
         const time_controller = self.read_memory(Time.TMC.get());
         return utils.is_bit_set(time_controller, 2);
@@ -170,7 +179,7 @@ const Emulator = struct {
             },
             3 => {
                 self.timer_counter = 256;
-            }
+            },
         }
     }
 
@@ -339,7 +348,7 @@ const Emulator = struct {
         }
 
         const tile_row: u16 = (pos_y / 8) * 32;
-        
+
         for (0..159) |pixel| {
             var pos_x = pixel + scroll_x;
 
@@ -371,7 +380,7 @@ const Emulator = struct {
             const data2 = self.read_memory(tile_location + line + 1);
 
             var color_bit = pos_x % 8;
-            color_bit -=  7;
+            color_bit -= 7;
             color_bit *= -1;
 
             var color_num = if (utils.is_bit_set(data2, color_bit)) 1 else 0;
@@ -423,7 +432,7 @@ const Emulator = struct {
                 while (tile_pixel >= 0) : (tile_pixel -= 1) {
                     var color_bit = tile_pixel;
                     if (flip_x) {
-                        color_bit -=  7;
+                        color_bit -= 7;
                         color_bit *= -1;
                     }
 
@@ -434,12 +443,12 @@ const Emulator = struct {
                     const color_address: u16 = if (utils.is_bit_set(attributes, 4)) 0xFF49 else 0xFF48;
                     const color = self.get_color(color_num, color_address);
 
-                    const pixel_x = 7 - tile_pixel;                    
+                    const pixel_x = 7 - tile_pixel;
                     const pixel = pos_x + pixel_x;
 
-                    self.screen_data[pixel][scanline][0] = color.red; 
-                    self.screen_data[pixel][scanline][1] = color.green; 
-                    self.screen_data[pixel][scanline][2] = color.blue; 
+                    self.screen_data[pixel][scanline][0] = color.red;
+                    self.screen_data[pixel][scanline][1] = color.green;
+                    self.screen_data[pixel][scanline][2] = color.blue;
                 }
             }
         }
@@ -453,17 +462,21 @@ const Emulator = struct {
 
         switch (color_num) {
             0 => {
-                hi = 1; lo = 0;
+                hi = 1;
+                lo = 0;
             },
             1 => {
-                hi = 3; lo = 2;
+                hi = 3;
+                lo = 2;
             },
             2 => {
-                hi = 5; lo = 4;
+                hi = 5;
+                lo = 4;
             },
             3 => {
-                hi = 7; lo = 6;
-            }
+                hi = 7;
+                lo = 6;
+            },
         }
 
         var color = utils.get_bit(palette, hi) << 1;
@@ -471,14 +484,14 @@ const Emulator = struct {
 
         switch (color) {
             0 => {
-                color_to_return = Color{ .red = 255, .green = 255, .blue = 255};
+                color_to_return = Color{ .red = 255, .green = 255, .blue = 255 };
             },
             1 => {
-                color_to_return = Color{ .red = 0xCC, .green = 0xCC, .blue = 0xCC};
+                color_to_return = Color{ .red = 0xCC, .green = 0xCC, .blue = 0xCC };
             },
             2 => {
-                color_to_return = Color{ .red = 0x77, .green = 0x77, .blue = 0x77};
-            }
+                color_to_return = Color{ .red = 0x77, .green = 0x77, .blue = 0x77 };
+            },
         }
 
         return color_to_return;
@@ -505,9 +518,12 @@ const Emulator = struct {
                 const new_address = address - 0xA000;
                 return self.cartridge_memory[new_address + (self.current_ram_bank * 0x2000)];
             },
+            0xFF00 => {
+                return get_joypad_state();
+            },
             else => {
                 return self.memory[address];
-            }
+            },
         }
     }
 
@@ -538,7 +554,6 @@ const Emulator = struct {
                 } else {
                     self.change_ram_bank(data);
                 }
-
             },
             0x6000...0x7FFF => {
                 if (self.memory_bank_type.is_MBC1() == false) {
@@ -564,8 +579,7 @@ const Emulator = struct {
         const test_data = data & 0xF;
         if (test_data == 0xA) {
             self.enable_ram = true;
-        }
-        else if (test_data == 0x0) {
+        } else if (test_data == 0x0) {
             self.enable_ram = false;
         }
     }
@@ -701,7 +715,7 @@ const Emulator = struct {
             if (utils.is_bit_set(status, 6)) {
                 self.request_interrupt(1);
             }
-        } else{
+        } else {
             status = utils.reset_bit(status, 2);
         }
 
@@ -713,11 +727,57 @@ const Emulator = struct {
         return utils.is_bit_set(lcd_control_register, 7);
     }
 
-    const Color = struct {
-        red: u8 = 0,
-        green: u8 = 0,
-        blue: u8 = 0
-    };
+    fn key_pressed(self: *Emulator, key: u8) void {
+        var prev_unset = false;
+        if (utils.is_bit_set(self.joypad_state, key) == false) {
+            prev_unset = true;
+        }
+        self.joypad_state = utils.reset_bit(self.joypad_state, key);
+
+        var button = true;
+
+        if (key > 3) {
+            button = true;
+        } else {
+            button = false;
+        }
+
+        const key_req = self.memory[0xFF00];
+        var req_interrupt = false;
+
+        if (button and !utils.is_bit_set(key_req, 5)) {
+            req_interrupt = true;
+        } else if (!button and !utils.is_bit_set(key_req, 4)) {
+            req_interrupt = false;
+        }
+
+        if (req_interrupt and !prev_unset) {
+            self.request_interrupt(4);
+        }
+    }
+
+    fn key_released(self: *Emulator, key: u8) void {
+        self.joypad_state = utils.set_bit(self.joypad_state, key);
+    }
+
+    fn get_joypad_state(self: *Emulator) u8 {
+        var res = self.memory[0xFF00];
+        res ^= 0xFF;
+
+        if (!utils.is_bit_set(res, 4)) {
+            var top_joypad = self.joypad_state >> 4;
+            top_joypad |= 0xF0;
+            res &= top_joypad;
+        } else if (!utils.is_bit_set(res, 5)) {
+            var bottom_joypad = self.joypad_state & 0xF;
+            bottom_joypad |= 0xF0;
+            res &= bottom_joypad;
+        }
+
+        return res;
+    }
+
+    const Color = struct { red: u8 = 0, green: u8 = 0, blue: u8 = 0 };
 
     const Flags = enum(u8) {
         FLAG_Z = 7,
@@ -728,8 +788,8 @@ const Emulator = struct {
 
     const Time = enum(u16) {
         TIMA = 0xFF05,
-        TMA  = 0xFF06,
-        TMC  = 0xFF07,
+        TMA = 0xFF06,
+        TMC = 0xFF07,
 
         pub fn get(self: Time) u16 {
             return @intFromEnum(self);
@@ -754,7 +814,6 @@ const Emulator = struct {
         }
     };
 };
-
 
 pub fn main() !void {
     const cartridge_file = try std.fs.cwd().openFile("./src/tetris.gb", .{});
